@@ -1,266 +1,287 @@
-# 🎵 Music Recommender Simulation
+# VibeFinder 2.0 — AI-Powered Music Recommender
 
-## Project Summary
+## Original Project (Modules 1–3)
 
-This project builds a simplified **content-based music recommender** that mirrors how platforms like Spotify suggest tracks. Given a user "taste profile" (preferred genre, mood, and energy level), it scores every song in a CSV catalog and returns the top K matches with plain-language explanations of why each song was chosen.
-
-Real platforms like Spotify combine two major strategies:
-- **Collaborative filtering** — "users who liked what you liked also liked X" — relies on aggregate behavior across millions of users.
-- **Content-based filtering** — "this song has the same energy, mood, and genre you prefer" — relies purely on song attributes and a single user's profile.
-
-This simulation uses **content-based filtering** because it works with zero user history, making it transparent and easy to reason about.
+**VibeFinder 1.0** was a content-based music recommender built in Modules 1–3. It accepted a structured user profile (preferred genre, mood, energy level, and valence) and scored every song in an 18-track CSV catalog using a weighted formula — genre match (+2.0), mood match (+1.0), energy proximity (up to +1.5), and valence proximity (up to +1.0). It returned the top-5 matches with plain-language explanations. The system was fully deterministic, required no API calls, and made the scoring logic completely transparent.
 
 ---
 
-## How The System Works
+## What's New in VibeFinder 2.0
 
-### Features each `Song` uses
+VibeFinder 2.0 adds a natural language interface powered by the **Claude API**. Instead of filling out a structured profile, you describe what you want in plain English — *"I need something intense to work out to"* or *"give me chill background music for studying"* — and an AI agent parses your intent, retrieves matching songs, and explains its picks in a personalised response.
 
-| Feature | Type | What it captures |
-|---|---|---|
-| `genre` | categorical | Overall musical style (pop, rock, lofi, jazz...) |
-| `mood` | categorical | Emotional quality (happy, chill, intense, moody...) |
-| `energy` | 0.0–1.0 | Intensity — low for ambient/lofi, high for rock/gym |
-| `valence` | 0.0–1.0 | Positivity — high = uplifting, low = dark/melancholy |
-| `danceability` | 0.0–1.0 | Rhythmic drive |
-| `acousticness` | 0.0–1.0 | Organic (acoustic) vs electronic sound |
-| `tempo_bpm` | integer | Beats per minute |
+**Advanced AI features used:**
 
-### What the `UserProfile` stores
-
-- `favorite_genre` — the genre they want prioritized
-- `favorite_mood` — the mood they are targeting
-- `target_energy` — their preferred intensity level (0.0–1.0)
-- `likes_acoustic` — boolean flag for acoustic vs electronic preference
-
-### Algorithm Recipe (Scoring Rule for one song)
-
-A song earns points based on how well it matches the user profile:
-
-| Match | Points |
+| Feature | How it's used |
 |---|---|
-| Genre match | +2.0 |
-| Mood match | +1.0 |
-| Energy closeness | up to +1.5 (formula: `1.5 × (1 - |song.energy - target_energy|)`) |
-| Valence closeness | up to +1.0 (formula: `1.0 × (1 - |song.valence - target_valence|)`) |
-
-The numerical features use a **proximity formula** rather than a threshold — songs closest to the user's target score highest, rewarding nuance over binary matching.
-
-### Ranking Rule
-
-The Ranking Rule applies the Scoring Rule to every song in the catalog, collects `(song, score, reasons)` tuples, sorts them highest-to-lowest, and returns the top K. The Scoring Rule is the judge; the Ranking Rule is the tournament.
-
-### Potential biases
-
-- Genre matching (weight 2.0) is the dominant signal — a great song with a different genre will almost always lose to a mediocre song in the right genre.
-- A small catalog (10 songs) means some profiles have very few viable matches, causing the same songs to appear repeatedly across different users.
+| **Agentic Workflow** | Claude runs in a tool-use loop: it interprets the query, calls `search_songs`, receives ranked results, then synthesises a final response |
+| **Retrieval-Augmented Generation (RAG)** | The agent retrieves relevant songs from `songs.csv` before generating any output — it never recommends from memory |
 
 ---
 
-## Data Flow Diagram
+## Architecture
 
-```mermaid
-flowchart TD
-    A[User Preference Profile\ngenre, mood, energy, valence] --> C[For each song in catalog]
-    B[songs.csv\n18 tracks] --> C
-    C --> D[score_song\nApply Algorithm Recipe]
-    D --> E{Score components}
-    E --> F[Genre match? +2.0]
-    E --> G[Mood match? +1.0]
-    E --> H[Energy proximity\nup to +1.5]
-    E --> I[Valence proximity\nup to +1.0]
-    F & G & H & I --> J[Total score + reasons list]
-    J --> K[Collect all scored songs]
-    K --> L[Sort highest to lowest score]
-    L --> M[Return top K recommendations\nwith title, score, reasons]
+```
+User query (natural language)
+         │
+         ▼
+  ┌─────────────────────────────────┐
+  │  MusicAgent  (src/agent.py)     │
+  │  Claude claude-haiku-4-5        │
+  │  - parses intent                │
+  │  - decides tool parameters      │
+  └──────────────┬──────────────────┘
+                 │ tool_use: search_songs(genre, mood, energy, …)
+                 ▼
+  ┌─────────────────────────────────┐
+  │  search_songs tool              │
+  │  → recommend_songs()            │   ← existing scoring logic
+  │  → songs.csv  (18 tracks)       │   ← RAG data source
+  └──────────────┬──────────────────┘
+                 │ tool_result: ranked songs + confidence scores
+                 ▼
+  ┌─────────────────────────────────┐
+  │  MusicAgent synthesises         │
+  │  personalised explanation       │
+  └──────────────┬──────────────────┘
+                 │
+                 ▼
+  Structured output:
+    • explanation  (natural language)
+    • recommendations[]  (title, artist, genre, mood, score, confidence, why)
+    • confidence  (avg score normalised 0–1)
 ```
 
+**Components:**
+
+| Component | File | Role |
+|---|---|---|
+| Recommender core | `src/recommender.py` | Scoring, ranking, `Song` / `UserProfile` dataclasses |
+| AI agent | `src/agent.py` | Claude agentic loop, tool dispatch, confidence scoring |
+| CLI runner | `src/main.py` | Batch simulation + `--agent` flag |
+| Song catalog | `data/songs.csv` | 18-track RAG data source |
+| Unit tests | `tests/test_recommender.py` | 14 tests for core scoring logic |
+| Reliability eval | `tests/test_reliability.py` | 20 tests covering 6 named profiles + tool layer |
+
 ---
 
-## Getting Started
+## Setup
 
-### Setup
+### 1. Clone and create a virtual environment
 
-1. Create a virtual environment (optional but recommended):
+```bash
+git clone <repo-url>
+cd ai110-module3show-musicrecommendersimulation-starter
 
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate      # Mac or Linux
-   .venv\Scripts\activate         # Windows
+python -m venv .venv
+source .venv/bin/activate      # Mac / Linux
+.venv\Scripts\activate         # Windows
+```
 
-2. Install dependencies
+### 2. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Run the app:
+### 3. Add your Anthropic API key (agent mode only)
+
+```bash
+cp .env.example .env
+# Open .env and set ANTHROPIC_API_KEY=sk-ant-...
+```
+
+The batch simulation works without a key. Only `--agent` mode requires it.
+
+---
+
+## Running the App
+
+### Batch simulation (original behaviour, no API key needed)
 
 ```bash
 python -m src.main
 ```
 
-### Running Tests
+Runs four hardcoded profiles and prints ranked recommendations with scores.
 
-Run the starter tests with:
+### Agent mode — single query
 
 ```bash
-pytest
+python -m src.main --agent "I want something chill to study to"
 ```
 
-You can add more tests in `tests/test_recommender.py`.
+### Agent mode — interactive REPL
+
+```bash
+python -m src.main --agent
+```
+
+Type your request at the prompt; type `quit` to exit.
+
+### Run tests
+
+```bash
+pytest                        # all 34 tests
+pytest tests/test_reliability.py -v   # reliability report only
+```
 
 ---
 
-## Experiments You Tried
+## Sample Interactions
 
-### Profiles Tested
+### Interaction 1 — Chill study session
 
-| Profile | Top Result | Score | Matched Intuition? |
+**Input:**
+```
+I need calm, relaxed music for studying. Something with low energy and a peaceful vibe.
+```
+
+**Output (truncated):**
+```
+Top 5 recommendations  (avg confidence: 82%)
+
+  #1  Piano After Rain by Clara Voss
+       Genre/Mood : classical / peaceful
+       Score      : 4.44  (confidence: 81%)
+       Why        : energy proximity (+1.41) | valence proximity (+0.92)
+
+  #2  Library Rain by Paper Lanterns
+       Genre/Mood : lofi / chill
+       Score      : 4.09  (confidence: 74%)
+       ...
+
+Here are some wonderfully calm tracks to keep you focused. Piano After Rain 
+leads with its gentle classical sound — nearly no energy, just pure ambience. 
+Library Rain adds a soft lofi texture that many students find ideal for 
+sustained concentration...
+```
+
+---
+
+### Interaction 2 — Intense workout
+
+**Input:**
+```
+I want something super high-energy and intense for the gym. Heavy, powerful music.
+```
+
+**Output (truncated):**
+```
+Top 5 recommendations  (avg confidence: 91%)
+
+  #1  Shatter Zone by Iron Veil
+       Genre/Mood : metal / intense
+       Score      : 4.94  (confidence: 90%)
+       Why        : mood match (+1.0) | energy proximity (+1.49) | ...
+
+  #2  Bass Drop City by Frequency Lab
+       Genre/Mood : electronic / energetic
+       Score      : 4.91  (confidence: 89%)
+       ...
+
+These tracks are built for maximum output. Shatter Zone hits 0.97 energy — 
+about as intense as it gets in our catalog. Bass Drop City pairs that 
+intensity with an electronic pulse that's perfect for keeping your tempo up...
+```
+
+---
+
+### Interaction 3 — Late-night moody drive
+
+**Input:**
+```
+Something moody and atmospheric for a late night drive. Synthwave or electronic, 
+medium energy.
+```
+
+**Output (truncated):**
+```
+Top 5 recommendations  (avg confidence: 79%)
+
+  #1  Night Drive Loop by Neon Echo
+       Genre/Mood : synthwave / moody
+       Score      : 5.19  (confidence: 94%)
+       Why        : genre match (+2.0) | mood match (+1.0) | energy proximity (+1.32)
+
+Night Drive Loop is a near-perfect fit — the synthwave genre and moody atmosphere 
+match exactly what you described, and the 0.75 energy level hits that sweet spot 
+between intensity and chill that makes long drives feel cinematic...
+```
+
+---
+
+## Design Decisions
+
+**Why an agentic loop instead of a single prompt?**
+Tool use lets Claude decide *what* preferences to extract from the query without hardcoding a translation layer. A query like "I'm feeling nostalgic and want something slow" gets mapped to `(genre=folk, mood=melancholic, energy=0.3)` by the model, not by regex. The loop also allows Claude to issue a follow-up tool call if the first set of parameters seems off — though in practice one call is sufficient for this catalog size.
+
+**Why Claude Haiku?**
+This task involves structured tool use over a small dataset. Haiku is fast, cheap, and more than capable for intent parsing + explanation generation. Opus or Sonnet would add latency and cost without meaningfully better results here.
+
+**Why keep the original batch mode?**
+The batch simulation is deterministic and needs no API key, making it easy to run, test, and demonstrate scoring logic without any external dependencies. It also provides a baseline for comparing agent output against ground truth.
+
+**Confidence scoring**
+Scores are normalised against the theoretical maximum of 5.5 (genre 2.0 + mood 1.0 + energy 1.5 + valence 1.0). A confidence of 0.90 means the song scored 90% of the best possible match — a meaningful signal that the recommendation is strong.
+
+**Prompt caching**
+The system prompt is marked with `cache_control: ephemeral`. On repeated queries in the same session, Claude reuses the cached prompt, reducing input token cost by ~80%.
+
+---
+
+## Testing Summary
+
+```
+34 tests collected
+34 passed in 0.91s
+```
+
+**test_recommender.py (14 tests)** — unit tests for the core scoring layer:
+- Score arithmetic: genre/mood/energy/valence deltas verified to exact decimal
+- Ranking: results are always sorted descending by score
+- Edge cases: `k > catalog size`, empty genre match, explanation format
+
+**test_reliability.py (20 tests)** — reliability evaluation:
+
+| Profile | Top genre expected | Pass? | Confidence |
 |---|---|---|---|
-| High-Energy Pop (pop/happy/0.85) | Sunrise City | 5.44 | Yes |
-| Chill Lofi (lofi/chill/0.38) | Library Rain | 5.44 | Yes |
-| Deep Intense Rock (rock/intense/0.92) | Storm Runner | 5.35 | Yes |
-| Adversarial (jazz/happy/0.90) | Coffee Shop Stories ← slow jazz | 3.67 | No — genre bias exposed |
+| High-energy pop | pop | ✅ | 0.99 |
+| Chill lofi | lofi | ✅ | 0.99 |
+| Intense rock | rock | ✅ | 0.97 |
+| Peaceful classical | classical | ✅ | 0.81 |
+| Hip-hop confident | hip-hop | ✅ | 0.91 |
+| Adversarial jazz + high energy | jazz | ✅ | 0.67 |
 
-### Weight Experiment: Double Energy, Halve Genre
+**Result: 6/6 profile tests passed. Average confidence: 0.89.**
 
-Changed genre weight from 2.0 → 1.0 and energy weight from 1.5 → 3.0 on the adversarial profile.
+The adversarial case passes (jazz song is still returned first due to genre dominance) but with the lowest confidence — exactly the failure mode documented in the model card. The test is designed to flag this transparently rather than hide it.
 
-- **Before:** Coffee Shop Stories (jazz, energy=0.37) ranked #1 because the genre bonus outweighed a terrible energy mismatch.
-- **After:** Sunrise City (pop, energy=0.82) ranked #1 — the high-energy target was finally honored.
+Tool-layer tests (no API key needed) verify that `_execute_tool` returns correct structure, that confidence values are always in [0, 1], that unknown tools raise `ValueError`, and that partial inputs use safe defaults.
 
-**Conclusion:** Genre dominance is a tunable artifact of the weights. Increasing energy importance produced more intuitive results for users whose genre preference conflicts with their energy preference.
-
----
-
-## Limitations and Risks
-
-- **Genre dominance:** A genre match (2.0 pts) can override a terrible energy or mood mismatch, leading to counterintuitive recommendations like recommending a slow jazz track to someone who wants high-energy music.
-- **Small catalog:** With only 18 songs, some genres have only one track. Users in underrepresented genres have very little variety in their top-5.
-- **Static taste model:** No memory of past behavior — the system cannot adapt to what the user actually skips or replays.
-- **No diversity:** Top results often cluster in the same genre/mood, with no mechanism to inject variety.
-
-You will go deeper on this in your model card.
+**What didn't work:** Early versions of the system prompt did not force the agent to call `search_songs` before responding. Claude occasionally answered from training data ("Here are some chill songs: ...") instead of querying the catalog. Adding *"Always call search_songs before responding. Never recommend songs from memory."* to the system prompt fixed this reliably.
 
 ---
 
-## Reflection
+## Reflection and Ethics
 
-Read and complete `model_card.md`:
+### Limitations and biases
 
-[**Model Card**](model_card.md)
+- **Genre dominance** remains the core bias: a 2.0-point genre bonus can override poor matches on energy and mood. A jazz fan who wants high-energy music receives the slowest jazz track in the catalog.
+- **Small catalog (18 songs)**: some genres have only one representative, so recommendations for underrepresented genres are forced, not meaningful.
+- **Fictional data**: all songs are invented. Real catalog data would introduce its own biases (recency, popularity, cultural representation).
+- **LLM hallucination risk**: if the system prompt is weakened, Claude can generate song titles that do not exist in the catalog. The guardrail `"Never recommend songs from memory"` mitigates this but does not eliminate it completely.
 
-Write 1 to 2 paragraphs here about what you learned:
+### Could this be misused?
 
-- about how recommenders turn data into predictions
-- about where bias or unfairness could show up in systems like this
+A music recommender is low-risk by nature, but the underlying pattern — a language model interpreting user intent and retrieving personalised content — applies to higher-stakes domains (health advice, financial guidance). In those contexts, the same architecture without stricter guardrails could surface harmful or misleading content. The key safeguard here is that Claude only picks from a fixed, human-curated catalog; it cannot generate new song recommendations outside that set.
 
+### What surprised me
 
----
+The biggest surprise was how brittle the system prompt needed to be. Without an explicit instruction not to use training memory, Claude confidently recommended real songs (Billie Eilish, Kendrick Lamar) instead of querying the catalog — and did so with no indication it was bypassing the tool. This is a meaningful reliability lesson: LLMs will take the path of least resistance unless you explicitly close off alternatives.
 
-## 7. `model_card_template.md`
+### Collaboration with AI
 
-Combines reflection and model card framing from the Module 3 guidance. :contentReference[oaicite:2]{index=2}  
+**Helpful suggestion**: When designing the tool schema, Claude suggested adding a `valence` field as an *optional* parameter (not required). This turned out to be the right call — many natural language queries ("chill study music") don't imply a specific positivity level, and requiring it would have forced Claude to hallucinate a default rather than leaving it unspecified.
 
-```markdown
-# 🎧 Model Card - Music Recommender Simulation
-
-## 1. Model Name
-
-Give your recommender a name, for example:
-
-> VibeFinder 1.0
-
----
-
-## 2. Intended Use
-
-- What is this system trying to do
-- Who is it for
-
-Example:
-
-> This model suggests 3 to 5 songs from a small catalog based on a user's preferred genre, mood, and energy level. It is for classroom exploration only, not for real users.
-
----
-
-## 3. How It Works (Short Explanation)
-
-Describe your scoring logic in plain language.
-
-- What features of each song does it consider
-- What information about the user does it use
-- How does it turn those into a number
-
-Try to avoid code in this section, treat it like an explanation to a non programmer.
-
----
-
-## 4. Data
-
-Describe your dataset.
-
-- How many songs are in `data/songs.csv`
-- Did you add or remove any songs
-- What kinds of genres or moods are represented
-- Whose taste does this data mostly reflect
-
----
-
-## 5. Strengths
-
-Where does your recommender work well
-
-You can think about:
-- Situations where the top results "felt right"
-- Particular user profiles it served well
-- Simplicity or transparency benefits
-
----
-
-## 6. Limitations and Bias
-
-Where does your recommender struggle
-
-Some prompts:
-- Does it ignore some genres or moods
-- Does it treat all users as if they have the same taste shape
-- Is it biased toward high energy or one genre by default
-- How could this be unfair if used in a real product
-
----
-
-## 7. Evaluation
-
-How did you check your system
-
-Examples:
-- You tried multiple user profiles and wrote down whether the results matched your expectations
-- You compared your simulation to what a real app like Spotify or YouTube tends to recommend
-- You wrote tests for your scoring logic
-
-You do not need a numeric metric, but if you used one, explain what it measures.
-
----
-
-## 8. Future Work
-
-If you had more time, how would you improve this recommender
-
-Examples:
-
-- Add support for multiple users and "group vibe" recommendations
-- Balance diversity of songs instead of always picking the closest match
-- Use more features, like tempo ranges or lyric themes
-
----
-
-## 9. Personal Reflection
-
-A few sentences about what you learned:
-
-- What surprised you about how your system behaved
-- How did building this change how you think about real music recommenders
-- Where do you think human judgment still matters, even if the model seems "smart"
-
+**Flawed suggestion**: Claude initially suggested using `claude-opus-4-7` as the default model in `MusicAgent`. For a task this simple — structured tool use over an 18-track catalog — Opus adds significant latency and cost with no measurable quality improvement. Haiku handles intent parsing and explanation generation at this scale without issue. The suggestion prioritised capability over appropriateness, which is a common LLM pattern worth watching for.
